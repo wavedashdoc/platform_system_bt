@@ -705,6 +705,41 @@ static void btu_hcif_rmt_name_request_comp_evt(uint8_t* p, uint16_t evt_len) {
   btm_sec_rmt_name_request_complete(&bd_addr, p, status);
 }
 
+constexpr uint8_t MIN_KEY_SIZE = 7;
+
+static void read_encryption_key_size_complete_after_encryption_change(
+    uint8_t status, uint16_t handle, uint8_t key_size) {
+  if (status == HCI_ERR_INSUFFCIENT_SECURITY) {
+    /* If remote device stop the encryption before we call "Read Encryption Key
+     * Size", we might receive Insufficient Security, which means that link is
+     * no longer encrypted. */
+    HCI_TRACE_WARNING("%s encryption stopped on link: 0x%02x", __func__,
+                      handle);
+    return;
+  }
+
+  if (status != HCI_SUCCESS) {
+    HCI_TRACE_WARNING("%s: disconnecting, status: 0x%02x", __func__, status);
+    btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+    return;
+  }
+
+  if (key_size < MIN_KEY_SIZE) {
+    android_errorWriteLog(0x534e4554, "124301137");
+    HCI_TRACE_ERROR(
+        "%s encryption key too short, disconnecting. handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+
+    btsnd_hcic_disconnect(handle, HCI_ERR_HOST_REJECT_SECURITY);
+    return;
+  }
+
+  // good key size - succeed
+  btm_acl_encrypt_change(handle, status, 1 /* enable */);
+  btm_sec_encrypt_change(handle, status, 1 /* enable */);
+}
+
 /*******************************************************************************
  *
  * Function         btu_hcif_encryption_change_evt
@@ -1622,9 +1657,37 @@ static void btu_hcif_enhanced_flush_complete_evt(void) {
  * End of Simple Pairing Events
  **********************************************/
 
-/**********************************************
- * BLE Events
- **********************************************/
+static void read_encryption_key_size_complete_after_key_refresh(
+    uint8_t status, uint16_t handle, uint8_t key_size) {
+  if (status == HCI_ERR_INSUFFCIENT_SECURITY) {
+    /* If remote device stop the encryption before we call "Read Encryption Key
+     * Size", we might receive Insufficient Security, which means that link is
+     * no longer encrypted. */
+    HCI_TRACE_WARNING("%s encryption stopped on link: 0x%02x", __func__,
+                      handle);
+    return;
+  }
+
+  if (status != HCI_SUCCESS) {
+    HCI_TRACE_WARNING("%s: disconnecting, status: 0x%02x", __func__, status);
+    btsnd_hcic_disconnect(handle, HCI_ERR_PEER_USER);
+    return;
+  }
+
+  if (key_size < MIN_KEY_SIZE) {
+    android_errorWriteLog(0x534e4554, "124301137");
+    HCI_TRACE_WARNING(
+        "%s encryption key too short, disconnecting. handle: 0x%02x, key_size: "
+        "%d",
+        __func__, handle, key_size);
+
+    btsnd_hcic_disconnect(handle, HCI_ERR_HOST_REJECT_SECURITY);
+    return;
+  }
+
+  btm_sec_encrypt_change(handle, status, 1 /* enc_enable */);
+}
+
 static void btu_hcif_encryption_key_refresh_cmpl_evt(uint8_t* p) {
   uint8_t status;
   uint8_t enc_enable = 0;
@@ -1637,6 +1700,10 @@ static void btu_hcif_encryption_key_refresh_cmpl_evt(uint8_t* p) {
 
   btm_sec_encrypt_change(handle, status, enc_enable);
 }
+
+/**********************************************
+ * BLE Events
+ **********************************************/
 
 static void btu_ble_ll_conn_complete_evt(uint8_t* p, uint16_t evt_len) {
   btm_ble_conn_complete(p, evt_len, false);
